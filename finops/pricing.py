@@ -4,6 +4,32 @@ Figures are June-2026 as-of snapshots from the deck's RESEARCH dossier; treat
 live prices as fast-moving (re-baseline before each cohort).
 """
 from __future__ import annotations
+import math
+
+
+def cache_is_worth_it(
+    avg_reads: float, write_cost: float = 1.25, read_discount: float = 0.10
+) -> bool:
+    """Whether repeated cache reads repay the extra cost of writing a prefix.
+
+    All prices are input-price multipliers. ``write_cost=1.25`` means the
+    initial cache write costs 125% of normal input processing, so its premium
+    is 0.25, not 1.25. ``read_discount=0.10`` means a read costs 10% of normal
+    input processing. ``avg_reads`` excludes that first write.
+
+    Compared with processing the same prefix normally every time, savings are
+    ``avg_reads * (1 - read_discount) - (write_cost - 1)``. For a read discount
+    below 1, break-even is ``(write_cost - 1) / (1 - read_discount)``. Equality
+    does not save money. These multipliers are lab assumptions, not a live
+    provider quote; storage/TTL charges would require an additional premium.
+    """
+    values = (avg_reads, write_cost, read_discount)
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("Cache inputs must be finite numbers")
+    if avg_reads < 0 or write_cost < 1 or not 0 <= read_discount <= 1:
+        raise ValueError("Require avg_reads >= 0, write_cost >= 1 and 0 <= read_discount <= 1")
+    saving = avg_reads * (1 - read_discount) - (write_cost - 1)
+    return saving > 0 and not math.isclose(saving, 0.0, abs_tol=1e-12)
 
 
 def request_cost(

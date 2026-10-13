@@ -7,42 +7,40 @@ import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import csv
 import os
-from missions._common import load_csv, num, ROOT
+from missions._common import load_csv, ROOT
 from finops import allocation
 from missions.m2_inference_levers import MODEL_PRICES
-from finops import pricing
+from finops import cache_economics
 
 TAGS = ["team", "project"]
 
 
 def run(verbose: bool = True) -> dict:
     rows = load_csv("token_usage.csv")
+    cache_analysis = cache_economics.analyze_cache(rows, MODEL_PRICES)
     priced = []
-    for r in rows:
-        inp, out = int(num(r["input_tokens"])), int(num(r["output_tokens"]))
-        pin, pout = MODEL_PRICES[r["route_tier"]]
-        cost = pricing.request_cost(inp, out, pin, pout,
-                                    cached_in=int(num(r["cached_input_tokens"])),
-                                    batch=bool(int(num(r["is_batch"]))))
+    for index, r in enumerate(rows):
+        cost = cache_economics.request_cost_with_cache_policy(r, MODEL_PRICES, cache_analysis)
         priced.append({"team": r["team"], "project": r["project"],
-                       "service": "gpu-inference", "cost": cost})
+                       "service": "gpu-inference", "cost": cost,
+                       "resource_id": f"request-{index:04d}"})
 
     by_team = allocation.cost_by_tag(priced, "team")
     by_project = allocation.cost_by_tag(priced, "project")
     coverage = allocation.tag_coverage(priced, TAGS)
     ready = allocation.chargeback_ready(coverage)
 
-    # write a FOCUS-style export (first 50 rows as a sample)
-    focus = allocation.to_focus_rows(priced[:50])
+    # Export the entire priced day, so the bill can be reconciled with M2.
+    focus = allocation.to_focus_rows(priced)
     out_path = os.path.join(ROOT, "outputs", "focus_export.csv")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with open(out_path, "w", newline="") as f:
-        w = csv.writer(f)
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f, lineterminator="\n")
         w.writerow(["BillingAccountId", "ChargePeriodStart", "ServiceCategory",
                     "ServiceName", "ResourceId", "BilledCost", "BillingCurrency", "team", "project"])
-        for fr in focus:
+        for fr, source in zip(focus, priced):
             w.writerow([fr["BillingAccountId"], fr["ChargePeriodStart"], fr["ServiceCategory"],
-                        fr["ServiceName"], fr["ResourceId"], fr["BilledCost"], fr["BillingCurrency"],
+                        fr["ServiceName"], fr["ResourceId"], f"{source['cost']:.12f}", fr["BillingCurrency"],
                         fr["Tags"]["team"], fr["Tags"]["project"]])
 
     if verbose:
@@ -55,7 +53,11 @@ def run(verbose: bool = True) -> dict:
 
     return {"by_team": {k: round(v, 2) for k, v in by_team.items()},
             "by_project": {k: round(v, 2) for k, v in by_project.items()},
-            "tag_coverage": round(coverage, 3), "chargeback_ready": ready}
+            "tag_coverage": round(coverage, 3), "chargeback_ready": ready,
+            "request_count": len(rows), "tagged_count": sum(all(r[k] for k in TAGS) for r in rows),
+            "total_daily": sum(r["cost"] for r in priced),
+            "by_team_exact": by_team, "by_project_exact": by_project,
+            "focus_rows": len(focus)}
 
 
 if __name__ == "__main__":
